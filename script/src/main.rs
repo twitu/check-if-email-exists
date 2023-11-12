@@ -29,48 +29,35 @@ async fn main() -> Result<()> {
     );
 
     let job_ids_to_delete: Vec<(i32,)> = sqlx::query_as(&query).fetch_all(&pool).await?;
+    let job_ids_to_delete: Vec<i32> = job_ids_to_delete_vec.into_iter().map(|&(id,)| id).collect();
 
     if !job_ids_to_delete.is_empty() {
-        // Start a transaction
-        let mut tx = pool.begin().await?;
+        
+        // Convert job_ids to comma separated string to pass to query
+        let job_ids_string = vec.iter().map(|x| x.to_string() + ",").collect::<String>();
+        let job_ids_string = job_ids_string.trim_end_matches(",");
 
-        // Before deleting from bulk_jobs, delete the corresponding records from email_results in a batch
-        let delete_email_results_query =
-            "DELETE FROM email_results WHERE job_id = ANY($1::int[])";
+        // Create transaction to delete records from email_results and bulk_jobs tables
+        let delete_query = sqlx::query!(
+			r#"
+            BEGIN;
+            DELETE FROM email_results WHERE job_id IN ($1);
+            DELETE FROM bulk_jobs WHERE id IN ($1);
+            END;
+			"#,
+            job_ids_string
+		);
 
-        // Convert job_ids_to_delete to Vec<i32> before binding
-        let job_ids_to_delete_vec: Vec<i32> =
-            job_ids_to_delete.iter().map(|&(id,)| id).collect();
-
-        // Execute the delete query for email_results in a batch within the transaction
-        sqlx::query(delete_email_results_query)
-            .bind(&job_ids_to_delete_vec)
+        // Execute the delete query
+        sqlx::query(delete_query)
             .execute(&pool) // Use execute on the query builder
             .await?;
 
         info!(
-            "Email results for job IDs {:?} deleted successfully.",
+            "Email results and bulk job records for  IDs {:?} deleted successfully.",
             job_ids_to_delete
         );
-
-        // safely delete the records from bulk_jobs
-        let delete_bulk_jobs_query = "DELETE FROM bulk_jobs WHERE id = ANY($1::int[])";
-
-        // Execute the delete query for bulk_jobs in a batch within the transaction
-        sqlx::query(delete_bulk_jobs_query)
-            .bind(&job_ids_to_delete_vec)
-            .execute(&pool) // Use execute on the query builder
-            .await?;
-
-        info!(
-            "Bulk jobs records with IDs {:?} deleted successfully.",
-            job_ids_to_delete
-        );
-
-        // Commit the transaction if both deletes are successful
-        tx.commit().await?;
     }
 
     Ok(())
 }
-
